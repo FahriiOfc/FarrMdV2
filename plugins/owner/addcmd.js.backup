@@ -1,0 +1,166 @@
+// command/owner/addcmd.js
+
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.dirname(path.dirname(__dirname));
+const COMMAND_DIR = path.join(PROJECT_ROOT, 'command');
+
+export default {
+    name: 'addcmd',
+    aliases: [],
+    category: 'owner',
+    description: 'Add a new command dynamically',
+    ownerOnly: true,
+
+    async execute(ctx) {
+        const { sock, chat, message, quoted, isOwner } = ctx;
+        const filePath = ctx.args.join(' ') || '';
+
+        // ============================================================
+        // VALIDASI: HANYA OWNER
+        // ============================================================
+
+        if (!isOwner) {
+            console.log(`[ADDCMD] Blocked non-owner: ${ctx.sender}`);
+            return; // SILENT IGNORE
+        }
+
+        if (!filePath) {
+            return (
+                '❌ Masukkan path command!\n\n' +
+                '📌 *Cara Penggunaan:*\n' +
+                '1. `.addcmd command/main/test.js`\n' +
+                '2. Reply ke file JavaScript atau pesan yang berisi source code'
+            );
+        }
+
+        // ============================================================
+        // VALIDASI PATH - HARUS DI command/
+        // ============================================================
+
+        const normalized = path.normalize(filePath);
+        const fullPath = path.resolve(PROJECT_ROOT, normalized);
+
+        if (!fullPath.startsWith(COMMAND_DIR)) {
+            return '❌ Path harus berada di dalam command/ directory.';
+        }
+
+        if (!fullPath.endsWith('.js')) {
+            return '❌ File harus memiliki ekstensi .js.';
+        }
+
+        // Cek apakah file sudah ada
+        try {
+            await fs.access(fullPath);
+            return `❌ File sudah ada: ${filePath}\n\nGunakan .delcmd ${filePath} terlebih dahulu.`;
+        } catch {
+            // File tidak ada, lanjut
+        }
+
+        // ============================================================
+        // AMBIL SOURCE CODE
+        // ============================================================
+
+        let source = null;
+
+        if (quoted) {
+            const quotedMsg = quoted.message;
+            
+            // Cek document message (file JS)
+            if (quotedMsg?.documentMessage) {
+                try {
+                    const { downloadMediaMessage } = await import('@chaeulso/baileys');
+                    const buffer = await downloadMediaMessage(
+                        {
+                            key: quoted.key,
+                            message: quotedMsg
+                        },
+                        'buffer',
+                        {},
+                        { logger: console, reuploadRequest: sock.updateMediaMessage }
+                    );
+                    if (buffer) {
+                        source = buffer.toString('utf8');
+                        console.log('[ADDCMD] Source from document, size:', source.length);
+                    }
+                } catch (e) {
+                    console.log('[ADDCMD] Download error:', e.message);
+                }
+            } else if (quoted.text) {
+                source = quoted.text;
+                console.log('[ADDCMD] Source from quoted text, size:', source.length);
+            }
+        }
+
+        if (!source) {
+            return (
+                '❌ Tidak ada source code!\n\n' +
+                '📌 *Cara Penggunaan:*\n' +
+                '1. `.addcmd command/main/test.js`\n' +
+                '2. Reply ke file JavaScript atau pesan yang berisi source code command.'
+            );
+        }
+
+        // ============================================================
+        // VALIDASI SOURCE
+        // ============================================================
+
+        if (!source.includes('export default') || !source.includes('execute')) {
+            return '❌ Source code tidak valid! Pastikan command memiliki format yang benar.';
+        }
+
+        // ============================================================
+        // SIMPAN KE FILE (PERSISTENT)
+        // ============================================================
+
+        try {
+            await fs.writeFile(fullPath, source, 'utf8');
+            console.log('[ADDCMD] File saved:', fullPath);
+        } catch (error) {
+            return `❌ Gagal menulis file: ${error.message}`;
+        }
+
+        // ============================================================
+        // LOAD COMMAND SECARA DYNAMIC (Langsung Aktif)
+        // ============================================================
+
+        try {
+            const fileUrl = new URL(`file://${fullPath}`);
+            const importUrl = `${fileUrl.href}?t=${Date.now()}`; // Cache busting
+            const module = await import(importUrl);
+            const command = module.default;
+
+            if (!command || typeof command.execute !== 'function') {
+                // Invalid command, delete file
+                await fs.unlink(fullPath);
+                return '❌ Command tidak valid! File telah dihapus.';
+            }
+
+            // ============================================================
+            // REGISTER KE COMMAND LOADER (RELOAD)
+            // ============================================================
+
+            const commandLoader = ctx.commandLoader || global.commandLoader;
+            if (commandLoader) {
+                // Reload semua command (atau bisa juga reload spesifik)
+                await commandLoader.scanCommands();
+                console.log('[ADDCMD] Command reloaded via commandLoader');
+                return `✅ Command berhasil ditambahkan: ${command.name}\n📁 ${filePath}\n\n💡 Command langsung aktif tanpa restart!`;
+            } else {
+                return `✅ File berhasil ditulis: ${filePath}\n\n⚠️ Command loader tidak tersedia. Restart bot untuk memuat command.`;
+            }
+
+        } catch (error) {
+            // Clean up on error
+            try {
+                await fs.unlink(fullPath);
+                console.log('[ADDCMD] Cleaned up invalid file');
+            } catch (e) {}
+            return `❌ Gagal memuat command: ${error.message}`;
+        }
+    }
+};

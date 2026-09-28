@@ -1,0 +1,191 @@
+// command/owner/logcmd.js
+
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.dirname(path.dirname(__dirname));
+
+// PM2 log paths
+const PM2_OUT_LOG = path.join(process.env.HOME || '~', '.pm2', 'logs', 'farr-md-v1-out.log');
+const PM2_ERR_LOG = path.join(process.env.HOME || '~', '.pm2', 'logs', 'farr-md-v1-error.log');
+const PM2_NAMES = ['farr-md-v1', 'index', 'farrmd', 'farr-md'];
+
+export default {
+    name: 'logcmd',
+    aliases: ['logs', 'log'],
+    category: 'owner',
+    description: 'Get recent PM2 terminal logs (always text)',
+    ownerOnly: true,
+
+    async execute(ctx) {
+        const { isOwner, sock, chat, args, sender } = ctx;
+
+        // ============================================================
+        // VALIDASI: HANYA OWNER
+        // ============================================================
+
+        if (!isOwner) {
+            console.log(`[LOGCMD] Blocked non-owner: ${sender}`);
+            return; // SILENT IGNORE
+        }
+
+        // ============================================================
+        // PARSE ARGUMEN
+        // ============================================================
+
+        let lines = 15;
+        let filter = '';
+        let showError = false;
+
+        for (const arg of args) {
+            if (/^\d+$/.test(arg)) {
+                lines = parseInt(arg);
+            } else if (arg.startsWith('filter:')) {
+                filter = arg.replace('filter:', '').toLowerCase();
+            } else if (arg === '--error' || arg === '-e') {
+                showError = true;
+            }
+        }
+
+        // Batasi
+        if (lines > 30) lines = 30;
+        if (lines < 3) lines = 3;
+
+        await ctx.react('⏳');
+
+        // ============================================================
+        // AMBIL LOG DARI PM2
+        // ============================================================
+
+        let logContent = '';
+        let logSource = '';
+        let pm2Name = '';
+
+        // Cari nama PM2 process
+        try {
+            const { stdout } = await execAsync('pm2 list --no-color');
+            const lines_array = stdout.split('\n');
+            
+            for (const line of lines_array) {
+                for (const name of PM2_NAMES) {
+                    if (line.includes(name) && line.includes('online')) {
+                        pm2Name = name;
+                        break;
+                    }
+                }
+                if (pm2Name) break;
+            }
+
+            if (!pm2Name) {
+                const folderName = path.basename(PROJECT_ROOT);
+                for (const line of lines_array) {
+                    if (line.includes(folderName) && line.includes('online')) {
+                        pm2Name = folderName;
+                        break;
+                    }
+                }
+            }
+        } catch (e) {}
+
+        // Baca log file
+        const logFile = showError ? PM2_ERR_LOG : PM2_OUT_LOG;
+        const logType = showError ? 'Error' : 'Output';
+
+        try {
+            let content = await fs.readFile(logFile, 'utf8');
+            const allLines = content.split('\n').filter(Boolean);
+            const recent = allLines.slice(-lines);
+            logContent = recent.join('\n');
+            logSource = `PM2 ${logType}`;
+        } catch (e) {
+            // Fallback: PM2 CLI
+            try {
+                const pm2LogCmd = pm2Name 
+                    ? `pm2 logs ${pm2Name} --lines ${lines} --nostream`
+                    : `pm2 logs --lines ${lines} --nostream`;
+                
+                const { stdout, stderr } = await execAsync(pm2LogCmd);
+                logContent = showError ? stderr || stdout : stdout || stderr;
+                logSource = `PM2 CLI`;
+            } catch (pm2Error) {
+                logContent = '❌ Gagal ambil log. Pastikan PM2 berjalan.';
+                logSource = 'Error';
+            }
+        }
+
+        // ============================================================
+        // FILTER
+        // ============================================================
+
+        if (filter && logContent && !logContent.includes('Gagal')) {
+            const filtered = logContent.split('\n')
+                .filter(line => line.toLowerCase().includes(filter))
+                .join('\n');
+            
+            if (filtered) {
+                logContent = filtered;
+            } else {
+                logContent = `Tidak ada log mengandung "${filter}"`;
+            }
+        }
+
+        // ============================================================
+        // POTONG AGAR TIDAK KEPANJANGAN (PASTI TEXT)
+        // ============================================================
+
+        // Maksimal 3500 karakter (WhatsApp batas 4096)
+        const MAX_CHARS = 3500;
+
+        if (logContent.length > MAX_CHARS) {
+            // Ambil 1500 karakter pertama + 1500 karakter terakhir
+            const first = logContent.slice(0, 1500);
+            const last = logContent.slice(-1500);
+            const totalLines = logContent.split('\n').length;
+            logContent = `${first}\n\n... (${totalLines - 30} baris terpotong) ...\n\n${last}`;
+        }
+
+        // Jika masih kepanjangan, paksa potong
+        if (logContent.length > MAX_CHARS) {
+            logContent = logContent.slice(0, MAX_CHARS - 100) + '\n\n... (terpotong)';
+        }
+
+        // ============================================================
+        // BUILD OUTPUT - MINIMAL
+        // ============================================================
+
+        const timestamp = new Date().toLocaleString('id-ID', {
+            timeZone: 'Asia/Jakarta',
+            hour12: false
+        });
+
+        let output = `📋 *LOG (${lines} baris)*`;
+        if (showError) output += ` ⚠️ Error`;
+        if (filter) output += ` 🔍 ${filter}`;
+        if (pm2Name) output += ` | ${pm2Name}`;
+        output += `\n${'─'.repeat(20)}\n`;
+
+        if (logContent && !logContent.includes('Gagal')) {
+            output += logContent;
+        } else {
+            output += logContent || '(Tidak ada log)';
+        }
+
+        output += `\n\n${'─'.repeat(20)}`;
+        output += `\n📅 ${timestamp}`;
+
+        // ============================================================
+        // KIRIM - PASTIKAN TEXT (BUKAN FILE)
+        // ============================================================
+
+        // WhatsApp batas 4096 karakter, kita sudah potong di atas
+        await ctx.reply(output);
+        await ctx.react('✅');
+    }
+};

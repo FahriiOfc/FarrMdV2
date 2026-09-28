@@ -1,0 +1,70 @@
+// command/owner/delcmd.js
+
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.dirname(path.dirname(__dirname));
+const COMMAND_DIR = path.join(PROJECT_ROOT, 'command');
+
+export default {
+    name: 'delcmd',
+    aliases: [],
+    category: 'owner',
+    description: 'Delete a command dynamically',
+    ownerOnly: true,
+
+    async execute(ctx) {
+        const { isOwner } = ctx;
+        const filePath = ctx.args.join(' ') || '';
+
+        if (!isOwner) {
+            console.log(`[DELCMD] Blocked non-owner: ${ctx.sender}`);
+            return; // SILENT IGNORE
+        }
+
+        if (!filePath) {
+            return (
+                '❌ Masukkan path command!\n\n' +
+                'Contoh:\n' +
+                '.delcmd command/main/test.js'
+            );
+        }
+
+        const normalized = path.normalize(filePath);
+        const fullPath = path.resolve(PROJECT_ROOT, normalized);
+
+        if (!fullPath.startsWith(COMMAND_DIR)) {
+            return '❌ Path harus berada di dalam command/ directory.';
+        }
+
+        if (!fullPath.endsWith('.js')) {
+            return '❌ File harus memiliki ekstensi .js.';
+        }
+
+        try {
+            await fs.access(fullPath);
+        } catch {
+            return `❌ File tidak ditemukan: ${filePath}`;
+        }
+
+        // Delete file
+        try {
+            await fs.unlink(fullPath);
+            console.log('[DELCMD] File deleted:', fullPath);
+        } catch (error) {
+            return `❌ Gagal menghapus file: ${error.message}`;
+        }
+
+        // Unregister command via command loader
+        const commandLoader = ctx.commandLoader || global.commandLoader;
+        if (commandLoader) {
+            await commandLoader.scanCommands();
+            return `✅ Command berhasil dihapus: ${filePath}\n\n💡 Command langsung nonaktif tanpa restart!`;
+        } else {
+            return `✅ File berhasil dihapus: ${filePath}`;
+        }
+    }
+};

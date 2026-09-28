@@ -1,0 +1,145 @@
+// command/owner/editcmd.js
+
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.dirname(path.dirname(__dirname));
+const COMMAND_DIR = path.join(PROJECT_ROOT, 'command');
+const LIB_DIR = path.join(PROJECT_ROOT, 'lib');
+
+export default {
+    name: 'editcmd',
+    aliases: ['edit'],
+    category: 'owner',
+    description: 'Edit file in command/ or lib/',
+    ownerOnly: true,
+
+    async execute(ctx) {
+        const { isOwner, sock, chat, quoted, args, sender } = ctx;
+
+        // ============================================================
+        // VALIDASI: HANYA OWNER
+        // ============================================================
+
+        if (!isOwner) {
+            console.log(`[EDITCMD] Blocked non-owner: ${sender}`);
+            return; // SILENT IGNORE
+        }
+
+        const filePath = args.join(' ') || '';
+
+        if (!filePath) {
+            return (
+                '❌ Masukkan path file!\n\n' +
+                '📌 *Cara Penggunaan:*\n' +
+                '1. `.editcmd lib/media.js`\n' +
+                '2. Reply ke pesan/teks yang berisi source code baru\n\n' +
+                '📁 *Bisa edit:*\n' +
+                '• command/  - Semua file di command/\n' +
+                '• lib/      - Semua file di lib/'
+            );
+        }
+
+        // ============================================================
+        // VALIDASI PATH
+        // ============================================================
+
+        const normalized = path.normalize(filePath);
+        const fullPath = path.resolve(PROJECT_ROOT, normalized);
+
+        const isInCommand = fullPath.startsWith(COMMAND_DIR);
+        const isInLib = fullPath.startsWith(LIB_DIR);
+
+        if (!isInCommand && !isInLib) {
+            return '❌ Path harus berada di dalam command/ atau lib/ directory.';
+        }
+
+        if (!fullPath.endsWith('.js')) {
+            return '❌ File harus memiliki ekstensi .js.';
+        }
+
+        // ============================================================
+        // CEK FILE EXISTS
+        // ============================================================
+
+        try {
+            await fs.access(fullPath);
+        } catch {
+            return `❌ File tidak ditemukan: ${filePath}`;
+        }
+
+        // ============================================================
+        // AMBIL SOURCE BARU
+        // ============================================================
+
+        let newSource = null;
+
+        if (quoted) {
+            const quotedMsg = quoted.message;
+            
+            // Cek document message (file JS)
+            if (quotedMsg?.documentMessage) {
+                try {
+                    const { downloadMediaMessage } = await import('@chaeulso/baileys');
+                    const buffer = await downloadMediaMessage(
+                        {
+                            key: quoted.key,
+                            message: quotedMsg
+                        },
+                        'buffer',
+                        {},
+                        { logger: console, reuploadRequest: sock.updateMediaMessage }
+                    );
+                    if (buffer) {
+                        newSource = buffer.toString('utf8');
+                    }
+                } catch (e) {
+                    console.log('[EDITCMD] Download error:', e.message);
+                }
+            } else if (quoted.text) {
+                newSource = quoted.text;
+            }
+        }
+
+        if (!newSource) {
+            return (
+                '❌ Tidak ada source code baru!\n\n' +
+                '📌 *Cara:*\n' +
+                '1. `.editcmd lib/media.js`\n' +
+                '2. Reply ke pesan/teks yang berisi source code baru\n\n' +
+                '💡 Gunakan .getcmd lib/media.js dulu untuk backup'
+            );
+        }
+
+        // ============================================================
+        // SIMPAN FILE (OVERWRITE)
+        // ============================================================
+
+        try {
+            // Backup dulu sebelum overwrite
+            const backupPath = `${fullPath}.backup`;
+            const oldContent = await fs.readFile(fullPath, 'utf8');
+            await fs.writeFile(backupPath, oldContent, 'utf8');
+            console.log('[EDITCMD] Backup saved:', backupPath);
+
+            // Write new content
+            await fs.writeFile(fullPath, newSource, 'utf8');
+            console.log('[EDITCMD] File updated:', fullPath);
+
+            const relativePath = path.relative(PROJECT_ROOT, fullPath);
+            
+            return (
+                `✅ File berhasil diupdate!\n\n` +
+                `📁 ${relativePath}\n` +
+                `📦 Backup: ${relativePath}.backup\n\n` +
+                `💡 Jika error, restore dengan:\n` +
+                `.editcmd ${relativePath} (reply ke file backup)`
+            );
+        } catch (error) {
+            return `❌ Gagal menulis file: ${error.message}`;
+        }
+    }
+};

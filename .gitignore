@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Session (JANGAN PERNAH upload!)
+auth/
+session/
+
+# Database
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# Temp
+temp/
+tmp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Backup
+backup/
+*.zip
+*.tar.gz

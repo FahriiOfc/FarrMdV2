@@ -1,0 +1,102 @@
+// command/owner/restorecmd.js
+
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.dirname(path.dirname(__dirname));
+const COMMAND_DIR = path.join(PROJECT_ROOT, 'command');
+const LIB_DIR = path.join(PROJECT_ROOT, 'lib');
+
+export default {
+    name: 'restorecmd',
+    aliases: ['restore', 'undo'],
+    category: 'owner',
+    description: 'Restore file from backup (.backup)',
+    ownerOnly: true,
+
+    async execute(ctx) {
+        const { isOwner, args, sender } = ctx;
+
+        // ============================================================
+        // VALIDASI: HANYA OWNER
+        // ============================================================
+
+        if (!isOwner) {
+            console.log(`[RESTORECMD] Blocked non-owner: ${sender}`);
+            return;
+        }
+
+        const filePath = args.join(' ') || '';
+
+        if (!filePath) {
+            return (
+                '❌ Masukkan path file!\n\n' +
+                '📌 *Contoh:*\n' +
+                '.restorecmd lib/media.js\n' +
+                '.restorecmd command/main/menu.js\n\n' +
+                '💡 Backup otomatis dibuat saat .editcmd'
+            );
+        }
+
+        // ============================================================
+        // VALIDASI PATH
+        // ============================================================
+
+        const normalized = path.normalize(filePath);
+        const fullPath = path.resolve(PROJECT_ROOT, normalized);
+
+        const isInCommand = fullPath.startsWith(COMMAND_DIR);
+        const isInLib = fullPath.startsWith(LIB_DIR);
+
+        if (!isInCommand && !isInLib) {
+            return '❌ Path harus di command/ atau lib/';
+        }
+
+        if (!fullPath.endsWith('.js')) {
+            return '❌ File harus .js';
+        }
+
+        // ============================================================
+        // CEK BACKUP
+        // ============================================================
+
+        const backupPath = `${fullPath}.backup`;
+        const backupTimestamp = `${fullPath}.backup_*`;
+
+        try {
+            await fs.access(backupPath);
+        } catch {
+            return (
+                `❌ Tidak ada backup untuk: ${filePath}\n\n` +
+                `💡 Backup otomatis dibuat saat .editcmd`
+            );
+        }
+
+        // ============================================================
+        // RESTORE
+        // ============================================================
+
+        try {
+            // Baca backup
+            const backupContent = await fs.readFile(backupPath, 'utf8');
+            
+            // Tulis ke file asli
+            await fs.writeFile(fullPath, backupContent, 'utf8');
+            
+            const relativePath = path.relative(PROJECT_ROOT, fullPath);
+
+            return (
+                `✅ File berhasil direstore!\n\n` +
+                `📁 ${relativePath}\n` +
+                `📦 Dari: ${relativePath}.backup\n\n` +
+                `💡 File kembali seperti sebelum diedit.`
+            );
+
+        } catch (error) {
+            return `❌ Gagal restore: ${error.message}`;
+        }
+    }
+};

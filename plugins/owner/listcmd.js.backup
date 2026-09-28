@@ -1,0 +1,181 @@
+// command/owner/listcmd.js
+
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.dirname(path.dirname(__dirname));
+const COMMAND_DIR = path.join(PROJECT_ROOT, 'command');
+const LIB_DIR = path.join(PROJECT_ROOT, 'lib');
+
+export default {
+    name: 'listcmd',
+    aliases: ['ls', 'dir'],
+    category: 'owner',
+    description: 'List files with folder navigation',
+    ownerOnly: true,
+
+    async execute(ctx) {
+        const { isOwner, sock, chat, args, sender } = ctx;
+
+        // ============================================================
+        // VALIDASI: HANYA OWNER
+        // ============================================================
+
+        if (!isOwner) {
+            console.log(`[LISTCMD] Blocked non-owner: ${sender}`);
+            return; // SILENT IGNORE
+        }
+
+        // ============================================================
+        // PARSE PATH
+        // ============================================================
+
+        let targetPath = args.join(' ') || '';
+
+        // Default ke command/ jika kosong
+        if (!targetPath) {
+            targetPath = 'command/';
+        }
+
+        const normalized = path.normalize(targetPath);
+        const fullPath = path.resolve(PROJECT_ROOT, normalized);
+
+        const isCommand = fullPath.startsWith(COMMAND_DIR);
+        const isLib = fullPath.startsWith(LIB_DIR);
+
+        if (!isCommand && !isLib) {
+            return (
+                '❌ Path tidak valid!\n\n' +
+                '📁 Hanya bisa akses:\n' +
+                '• command/\n' +
+                '• lib/\n\n' +
+                '📌 Contoh:\n' +
+                '.listcmd\n' +
+                '.listcmd command/main/'
+            );
+        }
+
+        // ============================================================
+        // CEK PATH
+        // ============================================================
+
+        try {
+            await fs.access(fullPath);
+        } catch {
+            return `❌ Path tidak ditemukan: ${targetPath}`;
+        }
+
+        const stat = await fs.stat(fullPath);
+
+        // ============================================================
+        // JIKA FILE
+        // ============================================================
+
+        if (stat.isFile()) {
+            const fileName = path.basename(fullPath);
+            const fileSize = (stat.size / 1024).toFixed(2);
+            const relativePath = path.relative(PROJECT_ROOT, fullPath);
+            
+            return (
+                `📄 ${fileName}\n` +
+                `📁 ${relativePath}\n` +
+                `📊 ${fileSize} KB`
+            );
+        }
+
+        // ============================================================
+        // LIST FOLDER
+        // ============================================================
+
+        const entries = await fs.readdir(fullPath, { withFileTypes: true });
+
+        const folders = [];
+        const jsFiles = [];
+        const otherFiles = [];
+
+        for (const entry of entries) {
+            if (entry.isDirectory()) {
+                folders.push(entry.name);
+            } else if (entry.isFile()) {
+                if (entry.name.endsWith('.js')) {
+                    jsFiles.push(entry.name);
+                } else {
+                    otherFiles.push(entry.name);
+                }
+            }
+        }
+
+        folders.sort();
+        jsFiles.sort();
+        otherFiles.sort();
+
+        // ============================================================
+        // BUILD OUTPUT - MINIMALIS
+        // ============================================================
+
+        const relativePath = path.relative(PROJECT_ROOT, fullPath) || '.';
+        const isRoot = relativePath === 'command' || relativePath === 'lib' || relativePath === '.';
+
+        let output = `📁 *${relativePath}/*\n`;
+        output += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+        // Parent directory
+        if (!isRoot) {
+            const parent = path.dirname(relativePath);
+            output += `📂 ../${parent}/\n`;
+            output += `   ( .listcmd ${parent}/ )\n\n`;
+        }
+
+        // Folders
+        if (folders.length > 0) {
+            for (const folder of folders) {
+                output += `📂 ${folder}/\n`;
+            }
+            output += '\n';
+        }
+
+        // JS Files
+        if (jsFiles.length > 0) {
+            for (const file of jsFiles) {
+                output += `📄 ${file}\n`;
+            }
+            output += '\n';
+        }
+
+        // Other Files
+        if (otherFiles.length > 0) {
+            for (const file of otherFiles) {
+                output += `📄 ${file}\n`;
+            }
+            output += '\n';
+        }
+
+        // Total
+        const total = folders.length + jsFiles.length + otherFiles.length;
+        output += `━━━━━━━━━━━━━━━━━━━━\n`;
+        output += `📊 Total: ${total} items`;
+
+        // ============================================================
+        // KIRIM
+        // ============================================================
+
+        if (output.length > 4000) {
+            try {
+                await sock.sendMessage(chat, {
+                    document: Buffer.from(output, 'utf8'),
+                    fileName: `list_${relativePath.replace(/\//g, '_')}.txt`,
+                    mimetype: 'text/plain',
+                    caption: `📁 ${relativePath}/`
+                });
+                return '✅ Daftar dikirim sebagai file!';
+            } catch (error) {
+                return `❌ Gagal kirim file: ${error.message}`;
+            }
+        }
+
+        return output;
+    }
+};
